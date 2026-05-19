@@ -99,17 +99,49 @@ def get_environmental_status():
         
     return f"{month}月{day}日 · {solar_term}", weather_alert
 
-# 從 Sidebar 讀取 API Key (保障安全性)
-st.sidebar.markdown("### 🔑 API 安全憑證設定")
-api_key = st.sidebar.text_input(
-    "請輸入您的 Gemini API Key",
-    type="password",
-    help="本程式完全運行於用戶端，API Key 將安全地直接傳送給 Google 端點，不會被第三方記錄。",
-    value=os.environ.get("GEMINI_API_KEY", "")
-)
+# 讀取 API Key (優先序：Streamlit Secrets -> 系統環境變數 -> 使用者自備金鑰)
+system_api_key = ""
+is_using_system_key = False
 
-if not api_key:
-    st.sidebar.warning("⚠️ 請先在左側輸入 Gemini API Key 才能正式啟用 AI 圖文生成功能！")
+# 1. 優先偵測 Streamlit 雲端內建的 Secrets 託管機制
+if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
+    system_api_key = st.secrets["GEMINI_API_KEY"]
+    is_using_system_key = True
+# 2. 次要偵測本地主機或伺服器系統環境變數
+elif os.environ.get("GEMINI_API_KEY"):
+    system_api_key = os.environ.get("GEMINI_API_KEY", "")
+    is_using_system_key = True
+
+# 側邊欄安全設定 UI 調整
+st.sidebar.markdown("### 🔑 API 安全憑證設定")
+
+if is_using_system_key:
+    st.sidebar.success("🟢 系統已開啟「免輸入金鑰」通道！\n您不需貼上金鑰，即可直接一鍵生成圖文。")
+    # 提供折疊備用，當系統公用額度用完時可讓特定使用者輸入自己的 Key
+    with st.sidebar.expander("🛠️ 額度用完了？想自備備用金鑰"):
+        user_api_key = st.text_input(
+            "輸入您自有的 Gemini API Key",
+            type="password",
+            help="若系統的公用免費共享額度用盡，您可以在此輸入自己的 Key 以維持正常生成。"
+        )
+    api_key = user_api_key if user_api_key else system_api_key
+else:
+    api_key = st.sidebar.text_input(
+        "請輸入您的 Gemini API Key",
+        type="password",
+        help="本程式完全運行於用戶端，API Key 將安全地直接傳送給 Google 端點，不會被第三方記錄。",
+        value=""
+    )
+    if not api_key:
+        st.sidebar.warning("⚠️ 請先在左側輸入 Gemini API Key 才能正式啟用 AI 圖文生成功能！")
+        st.sidebar.info(
+            "💡 **開發者部署提示：**\n"
+            "若要讓大家免輸入 Key 直接使用，請將此 App 部署至 Streamlit Cloud，"
+            "並在雲端管理後台的 **Settings ➔ Secrets** 中設定：\n"
+            "```toml\n"
+            "GEMINI_API_KEY = \"您的金鑰值\"\n"
+            "```"
+        )
 
 def call_gemini_expand_prompt(api_key, user_context):
     """呼叫 Gemini 2.5 Flash 將使用者勾選的繁體中文標籤擴寫為高品質生圖英文提示詞"""
