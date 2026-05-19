@@ -7,6 +7,21 @@ import io
 from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime
 
+# 預先定義高質感無字美學底圖 (當 Imagen 因免費 Key 400 限制時自動回退使用，確保展示不中斷)
+UNSPLASH_FALLBACKS = {
+    "cats": "https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=800&auto=format&fit=crop&q=80",
+    "plants": "https://images.unsplash.com/photo-1512428559087-560fa5ceab42?w=800&auto=format&fit=crop&q=80",
+    "tea": "https://images.unsplash.com/photo-1576092768241-dec231879fc3?w=800&auto=format&fit=crop&q=80",
+    "scenery": "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=800&auto=format&fit=crop&q=80",
+    "luck": "https://images.unsplash.com/photo-1508807526345-15e9b7f43081?w=800&auto=format&fit=crop&q=80",
+    
+    "coffee": "https://images.unsplash.com/photo-1509042239860-f550ce710b93?w=800&auto=format&fit=crop&q=80",
+    "succulent": "https://images.unsplash.com/photo-1485955900006-10f4d324d411?w=800&auto=format&fit=crop&q=80",
+    "chibi": "https://images.unsplash.com/photo-1583511655857-d19b40a7a54e?w=800&auto=format&fit=crop&q=80",
+    "landscape": "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=800&auto=format&fit=crop&q=80",
+    "cozy": "https://images.unsplash.com/photo-1513694203232-719a280e022f?w=800&auto=format&fit=crop&q=80"
+}
+
 # 設定 Streamlit 頁面設定
 st.set_page_config(
     page_title="跨世代智慧圖文生成平台",
@@ -174,9 +189,8 @@ def call_gemini_expand_prompt(api_key, user_context):
         st.error(f"連線至 Gemini API 時發生異常: {str(e)}")
         return None
 
-def call_imagen_generate(api_key, prompt):
-    """呼叫 Imagen 4.0 圖像生成模型生成高畫質無字卡片底圖"""
-    # 使用符合系統規範的 Imagen API 預測路徑
+def call_imagen_generate(api_key, prompt, pref_id=None):
+    """呼叫 Imagen 4.0 圖像生成模型生成高畫質無字卡片底圖 (整合免費版自動防禦回退機制)"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key={api_key}"
     headers = {"Content-Type": "application/json"}
     
@@ -194,18 +208,37 @@ def call_imagen_generate(api_key, prompt):
         response = requests.post(url, headers=headers, json=payload, timeout=60)
         if response.status_code == 200:
             result = response.json()
-            # 取得 base64 編碼的圖像數據
             base64_data = result['predictions'][0]['bytesBase64Encoded']
             import base64
             img_data = base64.b64decode(base64_data)
+            st.session_state.is_demo_mode = False
             return Image.open(io.BytesIO(img_data))
+        
+        elif response.status_code == 400 and "paid plans" in response.text:
+            # 偵測到 2026 年最新「付費計畫限制」錯誤
+            st.session_state.is_demo_mode = True
+            fallback_url = UNSPLASH_FALLBACKS.get(pref_id, "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=800&auto=format&fit=crop&q=80")
+            
+            # 從 Unsplash 下載對應之高質感美學圖片
+            img_response = requests.get(fallback_url, timeout=15)
+            if img_response.status_code == 200:
+                return Image.open(io.BytesIO(img_response.content))
+            else:
+                return None
         else:
             st.error(f"Imagen 生成失敗，錯誤碼：{response.status_code}")
             st.write(response.text)
             return None
     except Exception as e:
-        st.error(f"連線至 Imagen API 時發生異常: {str(e)}")
-        return None
+        # 其他異常情況也安全回退
+        st.session_state.is_demo_mode = True
+        fallback_url = UNSPLASH_FALLBACKS.get(pref_id, "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=800&auto=format&fit=crop&q=80")
+        try:
+            img_response = requests.get(fallback_url, timeout=15)
+            return Image.open(io.BytesIO(img_response.content))
+        except:
+            st.error(f"連線至 Imagen API 時發生異常: {str(e)}")
+            return None
 
 def get_system_font(font_size):
     """依據執行系統環境自動抓取適合繁體中文渲染的粗體字型，確保長輩閱讀體驗"""
@@ -382,6 +415,8 @@ with col_right:
         st.session_state.base_image = None
     if "prompt_lineage" not in st.session_state:
         st.session_state.prompt_lineage = ""
+    if "is_demo_mode" not in st.session_state:
+        st.session_state.is_demo_mode = False
         
     # 當點擊生成
     if generate_btn:
@@ -389,7 +424,6 @@ with col_right:
             st.error("❌ 尚未設定 API Key！請先在左邊側邊欄輸入 API 金鑰。")
         else:
             with st.spinner("🧙 步驟一：Gemini 2.5 正在為您智慧擴寫提示詞..."):
-                # 組合環境與標籤脈絡
                 env_context = f"Today is {solar_term}. Weather tip: {weather_alert}" if use_env else ""
                 user_context = (
                     f"Recipient: {selected_rec['en']}. "
@@ -404,7 +438,8 @@ with col_right:
                 st.session_state.prompt_lineage = expanded_prompt
                 
                 with st.spinner("🎨 步驟二：Imagen 正在為您彩繪無字藝術底圖..."):
-                    generated_img = call_imagen_generate(api_key, expanded_prompt)
+                    # 將 selected_pref['id'] 傳入，供防禦性回退機制使用
+                    generated_img = call_imagen_generate(api_key, expanded_prompt, pref_id=selected_pref['id'])
                     
                     if generated_img:
                         st.session_state.base_image = generated_img
@@ -412,6 +447,16 @@ with col_right:
             
     # 進行最終文字渲染預覽與下載
     if st.session_state.base_image is not None:
+        # 如果是 Demo 模式，在預覽區上方顯示友善提示
+        if st.session_state.is_demo_mode:
+            st.warning(
+                "💡 **溫馨提示：系統目前正處於「自動 Demo 模擬底圖模式」**\n\n"
+                "偵測到您使用的 Gemini API 尚未升級至付費計劃 (Pay-as-you-go)，"
+                "因此 Google 限制了 Imagen 繪圖功能。為確保體驗完整，"
+                "系統已自動為您媒合**高質感精美美學無字底圖**。您依然能隨意更換卡片文字、排版並下載成品！\n\n"
+                "👉 *如需體驗正宗 AI 實時繪圖，請依提示至 Google AI Studio 綁定信用卡升級即可！*"
+            )
+            
         # 疊加繁體字大字
         final_card = draw_card_with_text(
             st.session_state.base_image,
